@@ -1,2 +1,138 @@
-# dsh-doctor
-DSH Doctor: 自动诊断 DeepSeek Harness，用户确认后修复；公开 Beta。
+# DSH Doctor
+
+DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行时、安装、profile 配置、插件、工作区、日志和网络接入点，并提供有证据的建议。
+
+**默认扫描不修改用户配置。修复先预览具体方案，再由用户同意，之后才备份、执行和复检。** 诊断本身使用本地规则，不要求配置本插件作者的 GPT、DeepSeek 或其他模型 API key。
+
+当前候选版本：**0.9.0-beta.4**。预发布包用于验证通用安装与修复闭环；已验证与待验证的边界见下文。
+
+## 安装与首次使用
+
+1. 从本仓库的 GitHub Releases 下载 `dsh-doctor-0.9.0-beta.4.tgz`，保留为文件，无需自行编辑 DSH 的 profile 清单或 lockfile。
+2. 在 DSH 的插件管理入口安装该本地包并启用。支持插件管理工具的会话也可使用下列参数，将占位路径替换为下载文件的绝对路径：
+
+   ```json
+   { "action": "install_bundle", "target": "file:/ABSOLUTE/PATH/dsh-doctor-0.9.0-beta.4.tgz" }
+   ```
+
+   Windows 的 file 路径使用正斜杠。升级以插件管理器的结果为准；若提示重启，重启 DSH；已打开的 GUI 还应刷新页面。
+3. 启用后插件会自动做首轮体检。打开侧栏 DSH Doctor 查看结果；“刷新体检数据”会等待实际重采集完成。
+4. 插件自动发现当前用户的 DSH home、profile、工作区和 Web 地址，没有预置作者的用户名、盘符、代理端口或域名绕过例外。
+
+> 上述是安装参数模板，不代表仓库已经发布了对应 GitHub Release。发布者应先生成并验收候选包，再上传正式资产。
+
+## 普通用户的修复流程
+
+```text
+自动体检 → 问题及证据 → 对应修复入口 → 准备并预览 → 用户确认
+                                                 ↓
+                                本地备份 → 执行 → 复检 → 结果/回滚
+```
+
+- 「概览」和「问题」页会标出具体异常。支持处理的条目旁显示「修复」按钮，点击在该条目下准备并预览对应方案；需要代理地址时先由你填写。其它条目提供「查看建议」，不显示虚假的自动修复承诺。
+- 点击「修复」只进入输入/预览，不直接写文件；仍需核对方案、勾选同意并确认执行。「问题」页底部保留执行记录与回滚入口。
+- 预览展示目标文件、操作、改动大小、风险和重启要求，不展示配置正文或密钥值。
+- 准备和预览不修改配置。用户勾选同意当前方案并点击确认后才执行；取消只关闭预览。
+- 面板确认凭据绑定方案或执行记录，最多 5 分钟有效且只能使用一次。重新准备、预览或方案变化后须重新确认。
+- 从智能体调用 `dsh_repair apply/rollback` 时，单纯填写 `confirm` 也不会视为用户同意；插件另向真实用户发起确认问题。缺少用户答复通道时保留原配置。
+- 本人主动输入 `/doctor repair apply <planId> --yes` 或回滚命令，是另一条人类命令入口，不把模型生成的命令当作自动同意。
+- 写入前重新校验文件和计划；先备份后修改，复检失败会尝试回滚。后续文件变化、活动日志等情况可能使回滚受阻，结果会明确显示。
+- 配置写入可能要下次启动才生效。“文件已复检通过”和“当前进程已经采用新配置”分别展示。
+
+## 目前支持的执行动作
+
+| 动作 | 修改范围 | 用户输入/限制 |
+|---|---|---|
+| `proxy-env` | 当前 DSH home 的 `.env` 中代理路由变量 | 用户明确提供 HTTP(S) 代理 URL；不猜地址、不读取代理密码，不覆盖既有 `NO_PROXY` 和其他配置 |
+| `strip-bom` | 当前 profile 的 `package.json` 或 `cordis.patch.yml` | 仅去掉开头的 UTF-8 BOM；不重序列化 JSON、不扩大到其他文件 |
+| `secret-cleanup` | 受支持的本地 DSH 日志 | 先列范围，延后近期活动文件；覆盖不完整则显示 partial，不宣称全部清净 |
+
+备份可能包含修复前的敏感配置或日志，**只保留在本地**，不要连同备份、执行记录或原始诊断目录上传 GitHub。提交问题时优先使用插件生成的脱敏导出，并自行检查导出内容。
+
+## 对话与命令
+
+- `dsh_doctor`：扫描、分组报告、脱敏导出与导出历史。问题数据携带适用的修复准备动作。
+- `dsh_repair`：`list / prepare / preview / apply / rollback / history`；apply 和 rollback 走真实用户确认。
+- `/doctor`：本人命令体检；`/doctor history` 看导出记录；`/doctor export json` 导出脱敏 JSON。
+
+在对话里可直接说：“检查 DSH 环境，把支持修复的问题先列方案，等我确认再执行。”
+
+准备快照 15 分钟后过期。代理地址含账号密码、越界目标、链接目标、计划篡改和写前文件漂移都不会直接执行，需先核对并重新准备。
+
+## 网络、诊断与隐私
+
+- 接入点探测执行 DNS → TCP → TLS → HTTP，不发送 Authorization、cookie、模型凭据或 completion。
+- 匿名 401/403 表示端点有响应，不证明 key、额度或模型可用。429、5xx、超时、DNS/TLS 等分别说明，不用一条短超时断言“没有代理”。
+- HTTP 路由由实际 Node 版本、环境代理开关和宿主 dispatcher 决定；DNS/TCP/TLS 是独立连接，不预设四步同一路径。
+- 默认每目标配置 12000ms 总预算、3000ms 单步；可配置预算，单步上限 4000ms。预算是调度目标，不是严格 SLA；重试和响应体读取可能增加实际耗时。
+- 自动首轮体检之后，面板/工具按需刷新并使用短缓存；这是按需诊断，不是常驻高频后台扫描器。未知、未完成、旧快照与失败分开显示。
+- 模型凭据仅检查存在性；日志泄露扫描只显示类型、数量和路径，不把命中值输出给面板。脱敏导出与含原内容的本地备份是两类不同文件。
+- 环境健康分不是测试通过率或开发进度；根因的证据分也不是经过真实故障语料校准的概率。
+
+## 支持与验证边界
+
+- Node 声明：`^22.19.0 || >=24.0.0`；需要支持 Cordis 插件、工具与 Connection 的 DSH。能力缺失时对应入口降级，不开放匿名修复路由。
+- Windows x64 的 Node 22.19.0 与 Node 24.21.0 均完成本版全量回归；临时 home/profile、已装包与 HTTP 闭环单独记账，不替代另一台物理机器的安装证明，也不涵盖所有 22.x 补丁位。
+- 本版修复 Node 22.19.0 对截断 Zstd 静默返回的阻写缺口：先核对帧容器边界，截断、垃圾尾巴、不支持的 skippable 帧或解码错误均阻止该文件重写；完整空帧与合法多帧仍可读取。其它机器、深色/窄屏视觉、真实鼠标/点击及完整 shipped preset/审批/带凭据模型 turn 仍需独立验收。
+- 界面与主要诊断文案为中文。缺少系统代理环境变量时不会假定其他应用的系统代理已被 Node 使用；目前不自动发现注册表、钥匙串或系统代理密码。
+
+## 发布隔离
+
+公开包只包含运行源码、locale、图标、组合补丁、本 README、许可证与匿名连接探针。不包含作者的诊断证据、开发日志、研究笔记、会话、备份、第三方 vendor、安装日志或私有环境文件。
+
+发布者在开发工作区使用白名单检查与 staging 脚本，随后从干净 staging 打包；不要把开发工作区整体上传。`private: true` 仅防止误向 npm 发布，不妨碍 GitHub 源码与 Release 分发。仓库地址和问题反馈地址由实际发布者配置，不使用虚构的 owner/repository。
+
+## 检查目录
+
+以下表由规则目录生成，不手工维护编号。
+
+<!-- RULE_CATALOG_START -->
+| 规则 | 类别 | 默认级别 | 标题 |
+| --- | --- | --- | --- |
+| `DSH-ENV-001` | 运行环境 | error | Node 运行时版本 |
+| `DSH-ENV-002` | 运行环境 | warning | DSH 安装位置 |
+| `DSH-ENV-003` | 运行环境 | error | 宿主包完整性 |
+| `DSH-ENV-004` | 运行环境 | info | DSH 环境变量 |
+| `DSH-RUN-001` | 运行时 | info | 主机资源 |
+| `DSH-RUN-002` | 运行时 | info | 运行模式 |
+| `DSH-CFG-001` | 配置 | error | Profile 目录 |
+| `DSH-CFG-002` | 配置 | warning | 组合补丁 cordis.patch.yml |
+| `DSH-CFG-003` | 配置 | warning | 补丁行 ↔ 已装包 |
+| `DSH-CFG-004` | 配置 | error | Profile 清单 package.json |
+| `DSH-CFG-005` | 配置 | error | 配置文件 BOM |
+| `DSH-PLG-001` | 插件 | warning | 已安装插件 |
+| `DSH-PLG-002` | 插件 | error | Bundle 补丁完整性 |
+| `DSH-PLG-003` | 插件 | info | 兼容元数据（市场侧） |
+| `DSH-PLG-005` | 插件 | info | 兼容区间未声明 |
+| `DSH-PLG-004` | 插件 | warning | profile 清单 ↔ lockfile |
+| `DSH-INST-001` | 插件 | error | profile/package.json 带 UTF-8 BOM，严格 JSON 加载器会直接失败 |
+| `DSH-INST-003` | 插件 | error | 本地 file:/link: 依赖指向的路径不存在或类型不对（file: 目录或 .tgz/.tar.gz/.tar 文件，link: 目录） |
+| `DSH-INST-004` | 插件 | warning | pnpm minimumReleaseAge 发布年龄策略会挡住新版本（或只配了白名单没启用） |
+| `DSH-INST-005` | 插件 | warning | pnpm-lock.yaml 缺失：每次安装都要重新解析全部依赖 |
+| `DSH-INST-006` | 插件 | warning | PATH 里找不到 pnpm 可执行文件（手动跑 pnpm install 时会失败） |
+| `DSH-INST-007` | 插件 | warning | lockfile 里 file: 依赖的 specifier 与 manifest 不一致（目录被搬动 / 路径编码损坏） |
+| `DSH-INST-010` | 插件 | info | lockfile 里有 manifest 未声明的依赖（孤儿条目） |
+| `DSH-NET-001` | 连接 | warning | 本地 Web 端口 |
+| `DSH-DATA-001` | 数据 | error | DSH_HOME 数据目录 |
+| `DSH-DATA-002` | 数据 | info | 数据子目录 |
+| `DSH-DATA-003` | 日志 | info | 会话日志 |
+| `DSH-WS-001` | 工作区 | error | 当前工作区 |
+| `DSH-WS-003` | 工作区 | error | 工作区写入权限 |
+| `DSH-WS-002` | 工作区 | error | 临时目录写入 |
+| `DSH-SEC-001` | 凭据安全 | warning | 模型凭据（只看存在性） |
+| `DSH-SEC-002` | 凭据安全 | info | 凭据来源 |
+| `DSH-LOG-001` | 日志 | info | 日志源 |
+| `DSH-LOG-002` | 日志 | warning | 错误聚类 |
+| `DSH-LOG-003` | 日志 | warning | 宿主崩溃快照 |
+| `DSH-SEC-003` | 凭据安全 | error | 日志里的明文密钥 |
+| `DSH-NET-005` | 连接 | warning | 模型接入点 |
+| `DSH-NET-002` | 连接 | error | 接入点可达性 |
+| `DSH-NET-003` | 连接 | info | 代理设置 |
+| `DSH-NET-004` | 连接 | info | 本地模型端点 |
+
+共 40 条规则。
+<!-- RULE_CATALOG_END -->
+
+## 许可证
+
+[Apache License 2.0](<LICENSE>)，标准正文来源为 [Apache 官方许可证](<https://www.apache.org/licenses/LICENSE-2.0.txt>)。本项目不是 DeepSeek 官方产品。

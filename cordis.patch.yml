@@ -1,0 +1,5 @@
+# Bundle patch layer: 这一行把包的主入口挂成 Host 半边（普通 Cordis 插件）；
+# `dsh.client` 声明让 Web 端额外加载 ./client 作为浏览器半边。
+- insert:
+    - id: dsh-doctor
+      name: dsh-doctor

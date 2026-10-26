@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH Doctor",
+    "description": "Automatic DeepSeek Harness diagnostics. Preview repairs, then confirm before backup, execution, verification and rollback."
+  }
+}

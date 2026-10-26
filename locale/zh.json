@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH Doctor",
+    "description": "自动诊断 DeepSeek Harness 环境；修复先预览，用户确认后才备份、执行、复检与回滚。"
+  }
+}
