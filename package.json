@@ -1,6 +1,6 @@
 {
   "name": "dsh-doctor",
-  "version": "0.9.0-beta.8",
+  "version": "0.9.0-beta.8.ui.1",
   "private": true,
   "description": "DSH Doctor — 自动诊断 DeepSeek Harness 环境，提供修复建议；用户明确确认后才备份、执行、复检与回滚。默认体检不修改配置。",
   "icon": "icon.svg",
