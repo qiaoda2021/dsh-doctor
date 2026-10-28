@@ -69,12 +69,6 @@ DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行�
 | `secret-cleanup` | 受支持的本地 DSH 日志 | 先列范围，延后近期活动文件；覆盖不完整则显示 partial，不宣称全部清净 |
 | `plugin-enable` | 原生管理器中一个可寻址的禁用前端条目 | 仅在 bundle 仍启用且有明确前端声明时提供；target 使用真实 entryId；不自动重装、降版或重启 |
 
-### 插件更新后 UI 消失
-
-`DSH-PLG-006` 分别列出 bundle/条目启用状态、Host fiber、前端宣告与本地资源 GET 结果。未选择的可选组件只记录未启用，不计为 UI 故障。Host-only 插件和缺少证据的条目不报假故障；浏览器挂载保留 unknown。Host/资源检查通过不等于界面已恢复，仍需刷新页面核对。
-
-只有确认为禁用且可寻址的前端条目才出现启用方案。准备、预览与用户确认复用原修复链；过期、目标版本/清单或 profile 漂移时不执行。写前审计保存原禁用状态；显式回滚仅恢复该条目状态，不覆盖整个 profile。管理器要求重启或复检不完整时返回 partial，并保留实际 application，不宣称 UI 已恢复。当前不处理自动重装或版本回退。
-
 备份可能包含修复前的敏感配置或日志，**只保留在本地**，不要连同备份、执行记录或原始诊断目录上传 GitHub。提交问题时优先使用插件生成的脱敏导出，并自行检查导出内容。
 
 ## 对话与命令
@@ -110,65 +104,6 @@ DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行�
 - 本地候选版在 Windows x64 / Node 24.21.0 完成全量源码回归和临时 profile 的原生管理器验证；本次未重做 Node 22 完整回归。beta.4 的 Node 22.19.0 与 Node 24.21.0 历史基线独立保留，不冒充本版验证。
 - 保留既有 Node 22.19.0 截断 Zstd 阻写检查；本版新增 UI 分层证据与单条目启用恢复。跨机、全部 22.x、深色/窄屏视觉、真实鼠标/点击及完整 shipped preset/审批/带凭据模型 turn 仍需独立验收。
 - 界面与主要诊断文案为中文。缺少系统代理环境变量时不会假定其他应用的系统代理已被 Node 使用；目前不自动发现注册表、钥匙串或系统代理密码。
-
-## 发布隔离
-
-公开包只包含运行源码、locale、图标、组合补丁、本 README、许可证与匿名连接探针。不包含作者的诊断证据、开发日志、研究笔记、会话、备份、第三方 vendor、安装日志或私有环境文件。
-
-发布者在开发工作区使用白名单检查与 staging 脚本，随后从干净 staging 打包；不要把开发工作区整体上传。`private: true` 仅防止误向 npm 发布，不妨碍 GitHub 源码与 Release 分发。仓库地址和问题反馈地址由实际发布者配置，不使用虚构的 owner/repository。
-
-## 检查目录
-
-以下表由规则目录生成，不手工维护编号。
-
-<!-- RULE_CATALOG_START -->
-| 规则 | 类别 | 默认级别 | 标题 |
-| --- | --- | --- | --- |
-| `DSH-ENV-001` | 运行环境 | error | Node 运行时版本 |
-| `DSH-ENV-002` | 运行环境 | warning | DSH 安装位置 |
-| `DSH-ENV-003` | 运行环境 | error | 宿主包完整性 |
-| `DSH-ENV-004` | 运行环境 | info | DSH 环境变量 |
-| `DSH-RUN-001` | 运行时 | info | 主机资源 |
-| `DSH-RUN-002` | 运行时 | info | 运行模式 |
-| `DSH-CFG-001` | 配置 | error | Profile 目录 |
-| `DSH-CFG-002` | 配置 | warning | 组合补丁 cordis.patch.yml |
-| `DSH-CFG-003` | 配置 | warning | 补丁行 ↔ 已装包 |
-| `DSH-CFG-004` | 配置 | error | Profile 清单 package.json |
-| `DSH-CFG-005` | 配置 | error | 配置文件 BOM |
-| `DSH-PLG-001` | 插件 | warning | 已安装插件 |
-| `DSH-PLG-002` | 插件 | error | Bundle 补丁完整性 |
-| `DSH-PLG-003` | 插件 | info | 兼容元数据（市场侧） |
-| `DSH-PLG-005` | 插件 | info | 市场兼容信息缺失（非加载故障） |
-| `DSH-PLG-004` | 插件 | warning | profile 清单 ↔ lockfile |
-| `DSH-PLG-006` | 插件 | warning | 插件 UI 分层证据 |
-| `DSH-INST-001` | 插件 | error | profile/package.json 带 UTF-8 BOM，严格 JSON 加载器会直接失败 |
-| `DSH-INST-003` | 插件 | error | 本地 file:/link: 依赖指向的路径不存在或类型不对（file: 目录或 .tgz/.tar.gz/.tar 文件，link: 目录） |
-| `DSH-INST-004` | 插件 | warning | pnpm minimumReleaseAge 发布年龄策略会挡住新版本（或只配了白名单没启用） |
-| `DSH-INST-005` | 插件 | warning | pnpm-lock.yaml 缺失：每次安装都要重新解析全部依赖 |
-| `DSH-INST-006` | 插件 | warning | 插件安装通道与命令行 pnpm |
-| `DSH-INST-007` | 插件 | warning | lockfile 里 file: 依赖的 specifier 与 manifest 不一致（目录被搬动 / 路径编码损坏） |
-| `DSH-INST-008` | 插件 | error | 已安装插件不满足当前 DSH 的加载期兼容要求（engines.dsh 或 @deepseek-ai/dsh* peer）；只有拿到精确版本豁免时才降级为 warn |
-| `DSH-INST-010` | 插件 | info | lockfile 里有 manifest 未声明的依赖（孤儿条目） |
-| `DSH-NET-001` | 连接 | warning | 本地 Web 端口 |
-| `DSH-DATA-001` | 数据 | error | DSH_HOME 数据目录 |
-| `DSH-DATA-002` | 数据 | info | 数据子目录 |
-| `DSH-DATA-003` | 日志 | info | 会话日志 |
-| `DSH-WS-001` | 工作区 | error | 当前工作区 |
-| `DSH-WS-003` | 工作区 | error | 工作区写入权限 |
-| `DSH-WS-002` | 工作区 | error | 临时目录写入 |
-| `DSH-SEC-001` | 凭据安全 | warning | 模型凭据（只看存在性） |
-| `DSH-SEC-002` | 凭据安全 | info | 凭据来源 |
-| `DSH-LOG-001` | 日志 | info | 日志源 |
-| `DSH-LOG-002` | 日志 | warning | 错误聚类 |
-| `DSH-LOG-003` | 日志 | warning | 宿主崩溃快照 |
-| `DSH-SEC-003` | 凭据安全 | error | 日志里的明文密钥 |
-| `DSH-NET-005` | 连接 | warning | 模型接入点 |
-| `DSH-NET-002` | 连接 | error | 接入点可达性 |
-| `DSH-NET-003` | 连接 | info | 代理设置 |
-| `DSH-NET-004` | 连接 | info | 本地模型端点 |
-
-共 42 条规则。
-<!-- RULE_CATALOG_END -->
 
 ## 许可证
 
