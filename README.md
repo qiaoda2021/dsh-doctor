@@ -4,15 +4,34 @@ DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行�
 
 **默认扫描不修改用户配置。修复先预览具体方案，再由用户同意，之后才备份、执行和复检。** 诊断本身使用本地规则，不要求配置本插件作者的 GPT、DeepSeek 或其他模型 API key。
 
-当前候选版本：**0.9.0-beta.8.ui.1**。预发布包用于验证通用安装与修复闭环；已验证与待验证的边界见下文。
+当前候选版本：**0.9.0-beta.10**。预发布包用于验证通用安装与修复闭环；已验证与待验证的边界见下文。
+
+## 本次更新：来源、覆盖与验证边界
+
+- 现有插件页、工具 JSON/Markdown 与 `/doctor` 增加本地 bundle 来源。聚合子插件保留全部 `providedBy` 身份；不同安装路径/版本分别记录，不把普通依赖库当插件，也不建议单独卸载聚合子插件。
+- `dsh_doctor` 的 `candidateDir` 或 `/doctor preflight <本地候选包目录>` 只读核对包名、静态工具声明及 Cordis patch id/name。不执行目标代码、表达式或安装。路径相对体检工作区（Config cwd 或 Host 工作目录）；使用绝对路径最明确。slash 支持双引号包含空格。
+- 声明重叠表示待核实，不等于运行时冲突；override、group、isolate、子路径及合法多实例不被字符串重名判为故障。普通 YAML 尽量复用宿主解析器；缺解析能力、动态表达式、include、坏文件、读取/数量/深度边界均保留未核实。
+- 可选 `dsh.doctor.toolNames` 是 Doctor 的静态提示约定，不是 DSH SDK 的工具清单合同。缺声明或动态注册仍待核实；有声明也只比较声明子集。
+- 概览、文本与 JSON 增加整次扫描的 `ran/skipped/unknown/failed` 分组覆盖、原因和原采集时间。`failed` 指采集/规则执行异常，不混同健康故障；`filesInspected` 仅用实际测量，未测为未知。缓存、过期、旧报告与明细过滤分别标记，不改既有健康分、修复或确认流程。
+- 固定验证矩阵是维护者开发工具，不随离线包分发，也不在自动体检时运行。亲跑证据与历史记录分开；默认规划、缺 Node/runtime、其它 OS、超时、坏报告或清理不全都不算通过。
+- Node 22、其它 OS、跨机安装及真人视觉仍需独立验证；自动化证据不替代目标环境的安装验收。
+
+## 保留：界面故障定位
+
+- 原五个页签内增加分层证据：Host 资源可获取、浏览器模块工厂已执行、组件已注册、实际挂载分开显示，前一阶段不推定后一阶段。
+- 通过公开模块状态、Slot 注册台账与错误监督通道读取闭合状态；第三方实际挂载仍保留待核对。Doctor 自身通过 React 生命周期和侧栏 `active` 区分已挂载、当前选中和当前未选中。
+- 回报仅来自通过真实 Connection 认证的所有者浏览器。不上传错误正文、堆栈、URL/query、cookie、密钥、聊天或页面内容；内存有容量、版本、代际、顺序与 2 分钟时效限制。
+- 缺少 `browserPeer` 的旧宿主不启用网页修复与浏览器回报；诊断和对话修复链保持。公开模块或 Slot 能力缺失时显示未支持，不把未知刷绿，不改原始健康分或遮蔽既有故障。
+- 保留现有布局、主题 CSS、五页签、修复预览、真实用户确认、一次性令牌、备份、复检及回滚。不新增依赖，不自动重装或降级。
+- 安装与启用状态以原生插件管理器结果为准，按提示刷新页面或重启 DSH。自动化逻辑/HTTP 测试不等于真人视觉、点击或第三方挂载证明。
 
 ## 安装与首次使用
 
-1. 从本仓库的 GitHub Releases 下载 `dsh-doctor-0.9.0-beta.8.ui.1.tgz`，保留为文件，无需自行编辑 DSH 的 profile 清单或 lockfile。
+1. 从本仓库 [Releases](<https://github.com/qiaoda2021/dsh-doctor/releases>) 下载本版本 `dsh-doctor-0.9.0-beta.10.tgz` 并保留为文件。安装时无需自行编辑 DSH 的 profile 清单或 lockfile。
 2. 在 DSH 的插件管理入口安装该本地包并启用。支持插件管理工具的会话也可使用下列参数，将占位路径替换为下载文件的绝对路径：
 
    ```json
-   { "action": "install_bundle", "target": "file:/ABSOLUTE/PATH/dsh-doctor-0.9.0-beta.8.ui.1.tgz" }
+   { "action": "install_bundle", "target": "file:/ABSOLUTE/PATH/dsh-doctor-0.9.0-beta.10.tgz" }
    ```
 
    Windows 的 file 路径使用正斜杠。升级以插件管理器的结果为准；若提示重启，重启 DSH；已打开的 GUI 还应刷新页面。
@@ -52,9 +71,9 @@ DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行�
 
 ## 对话与命令
 
-- `dsh_doctor`：扫描、分组报告、脱敏导出与导出历史。问题数据携带适用的修复准备动作。
+- `dsh_doctor`：扫描、分组覆盖、来源、脱敏导出与历史；可传 `candidateDir` 只读预检本地包目录。问题数据保留适用修复准备动作。
 - `dsh_repair`：`list / prepare / preview / apply / rollback / history`；apply 和 rollback 走真实用户确认。
-- `/doctor`：本人命令体检；`/doctor history` 看导出记录；`/doctor export json` 导出脱敏 JSON。
+- `/doctor`：本人命令体检及覆盖；`/doctor preflight "本地候选包目录"` 看声明预检；`/doctor history` 看导出记录；`/doctor export json` 导出脱敏 JSON。
 
 在对话里可直接说：“检查 DSH 环境，把支持修复的问题先列方案，等我确认再执行。”
 
@@ -80,6 +99,8 @@ DSH 环境诊断与用户确认修复插件。安装启用后自动体检运行�
 ## 支持与验证边界
 
 - Node 声明：`^22.19.0 || >=24.0.0`；需要支持 Cordis 插件、工具与 Connection 的 DSH。能力缺失时对应入口降级，不开放匿名修复路由。
+- 本轮在 Windows x64 / Node 24.21.0 验证源码及临时 profile 内的真实 Cordis / BrowserAuth HTTP 围栏；重点契约为 DSH 0.2.1-rc.2，0.2.1-rc.4 另作回归。临时 profile 的 Host/HTTP 验证不等于完整应用或目标环境的安装验收；本次未重做 Node 22 完整回归。beta.4 的 Node 22.19.0 与 Node 24.21.0 历史基线独立保留，不冒充本版验证。
+- 保留既有 Node 22.19.0 截断 Zstd 阻写检查；本版新增 UI 分层证据与单条目启用恢复。跨机、全部 22.x、深色/窄屏视觉、真实鼠标/点击及完整 shipped preset/审批/带凭据模型 turn 仍需独立验收。
 - 界面与主要诊断文案为中文。缺少系统代理环境变量时不会假定其他应用的系统代理已被 Node 使用；目前不自动发现注册表、钥匙串或系统代理密码。
 
 ## 许可证
