@@ -46,6 +46,19 @@ export function validateWorkerReport(report, exitCode, host) {
   return ['cordis', 'dsh-credentials-local', 'dsh-host-webserver', 'dsh-client-connection'].every((name) => report.versions?.[name] === (name === 'cordis' ? '4.0.5' : host))
 }
 
+export function childFailure(result, elapsedMs) {
+  const stderr = String(result.stderr ?? '')
+  const observedCodes = [...stderr.matchAll(/^npm (?:error|ERR!) code ([A-Z][A-Z0-9_]*)\r?$/gm),
+    ...stderr.matchAll(/^npm http fetch (?:GET|POST|PUT|DELETE|HEAD) https:\/\/registry\.npmjs\.org\/\S+ attempt [1-9]\d* failed with ([A-Z][A-Z0-9_]*)\r?$/gm)].map((match) => match[1])
+  const npmErrorCodes = ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EACCES', 'EPERM', 'ENOENT', 'EBUSY', 'ENOSPC', 'ENOTEMPTY', 'ERESOLVE', 'EINTEGRITY', 'ENOTSUP', 'E401', 'E403', 'E404', 'E429', 'E500', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'ERR_SOCKET_TIMEOUT']
+    .filter((code) => observedCodes.includes(code))
+  const registryHttpStatuses = {}
+  for (const match of stderr.matchAll(/^npm http fetch (?:GET|POST|PUT|DELETE|HEAD) ([1-5]\d\d) https:\/\/registry\.npmjs\.org\//gm)) registryHttpStatuses[match[1]] = (registryHttpStatuses[match[1]] ?? 0) + 1
+  return { elapsedMs, processErrorCode: result.error ? (['ETIMEDOUT', 'ENOBUFS', 'ENOENT', 'EACCES', 'EPERM'].includes(result.error.code) ? result.error.code : 'UNKNOWN') : null,
+    signal: ['SIGTERM', 'SIGKILL', 'SIGABRT'].includes(result.signal) ? result.signal : null, npmErrorCodes, registryHttpStatuses,
+    stdoutBytes: Buffer.byteLength(String(result.stdout ?? '')), stderrBytes: Buffer.byteLength(stderr) }
+}
+
 function npmCli() {
   const bin = dirname(process.execPath)
   return [join(bin, 'node_modules/npm/bin/npm-cli.js'), join(bin, '../lib/node_modules/npm/bin/npm-cli.js')].find(existsSync)
@@ -70,9 +83,10 @@ async function main() {
     evidenceLimits: ['graph rows are fixtures, not desktop or browser visual proof', 'no model request, real profile, or live repair', 'platform overrides are branch tests; runtime fields identify native OS'] }
   const step = (id, status, exitCode, extra = {}) => report.steps.push({ id, status, exitCode, ...extra })
   const run = (id, args, cwd, timeout = 180000) => {
+    const started = Date.now()
     const result = spawnSync(process.execPath, args, { cwd, env, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
     const exitCode = typeof result.status === 'number' ? result.status : -1
-    step(id, exitCode === 0 ? 'passed' : 'failed', exitCode, { timedOut: result.error?.code === 'ETIMEDOUT' })
+    step(id, exitCode === 0 ? 'passed' : 'failed', exitCode, { timedOut: result.error?.code === 'ETIMEDOUT', ...(exitCode === 0 ? {} : { diagnostic: childFailure(result, Date.now() - started) }) })
     assert.equal(exitCode, 0, id)
     return result.stdout
   }
@@ -95,6 +109,7 @@ async function main() {
     } else {
       const npm = npmCli()
       assert(npm, 'setup-node npm CLI required')
+      report.runtime.npm = json(join(dirname(npm), '../package.json')).version
       const packed = JSON.parse(run('candidate-pack', [npm, 'pack', '--json', '--ignore-scripts', '--pack-destination', sandbox], stage))
       assert.equal(packed.length, 1)
       const packedFiles = packed[0].files.map((row) => row.path).sort()
@@ -104,7 +119,7 @@ async function main() {
       runtime = join(sandbox, 'sdk'); mkdirSync(runtime)
       writeFileSync(join(runtime, 'package.json'), JSON.stringify({ name: 'doctor-ci-sdk', private: true, type: 'module' }))
       const specs = SDK_PACKAGES.map((name) => `${name}@${name === '@deepseek-ai/cordis' ? '4.0.5' : host}`)
-      run('exact-sdk-and-candidate-fixture-install', [npm, 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org', '--save-exact', ...specs, archive], runtime, 480000)
+      run('exact-sdk-and-candidate-fixture-install', [npm, 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=http', '--registry=https://registry.npmjs.org', '--save-exact', ...specs, archive], runtime, 480000)
       doctorRoot = join(runtime, 'node_modules', 'dsh-doctor')
       report.source.packageExecution = 'npm tarball install; exact SDK Host/HTTP'
       for (const row of inspectPublicRelease(ROOT).files) assert.equal(samePublishedBytes(row, readFileSync(join(doctorRoot, row)), readFileSync(join(ROOT, row))), true, 'installed runtime bytes and manifest values match source')

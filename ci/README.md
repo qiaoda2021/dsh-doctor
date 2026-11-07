@@ -26,7 +26,11 @@ Public CI checks installed runtime bytes exactly. For the manifest it permits on
 
 A local cached-SDK reproduction may add `--runtime-root SDK_ROOT --prepared-package CANDIDATE_TGZ`. This read-only SDK mode runs staged source and records the supplied tarball hash, explicitly not npm installation or an Actions row. It never installs into an existing SDK/profile.
 
+The checkout disables Git autocrlf conversion for that action only. Before Node setup, every tracked working-tree file must match its raw Git blob hash; CRLF-transformed content is not accepted as frozen source. This gate does not diagnose npm installation failures.
+
 ## Receipt and cleanup
+
+The npm-install path records the actual setup-node npm version. Failed children additionally expose elapsed milliseconds, enumerated process error/signal, fixed npm error codes, registry HTTP status counts and output byte counts. npm HTTP output is parsed in memory, never uploaded or persisted by this driver. No timing log is enabled, installation deadlines remain unchanged, and missing diagnostic matches do not prove a phase was never reached.
 
 Only `summary.json` is uploaded. Its allowlisted fields bind revision (when available), canonical source file hashes, package version/tarball hash, actual runtime versions, step status/exit code, timestamps, counts and listener/Home cleanup. No raw stdout/stderr, environment dump, cookies/tokens, temporary absolute path, profile, SDK directory or log is uploaded. Failed children expose fixed codes only. Captured output remains inside the temporary domain and is discarded. Cleanup failure, missing versions, failed checks or bad receipts fail the run.
 

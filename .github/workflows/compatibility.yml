@@ -21,8 +21,20 @@ jobs:
         host: ['0.2.1-rc.2', '0.2.1-rc.4']
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
         with:
           persist-credentials: false
+      - name: Verify checkout bytes against Git objects
+        shell: bash
+        run: |
+          git ls-tree -rz HEAD | while IFS=$'\t' read -r -d '' meta file; do
+            expected="${meta##* }"
+            actual="$(git hash-object --no-filters -- "$file")"
+            test "$actual" = "$expected" || { echo CHECKOUT_BYTE_MISMATCH; exit 1; }
+          done
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
