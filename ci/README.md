@@ -4,7 +4,7 @@ This is a maintainer-only GitHub source surface. None of `ci/` or `.github/` shi
 
 ## Execution
 
-The fixed workflow runs ubuntu-24.04, macos-14 and windows-2022 × Node 22.19.0 / 24 × Host 0.2.1-rc.2 / 0.2.1-rc.4. The receipt records actual OS release, architecture, Node and loaded package versions. Node 24 means the actual 24.x selected by setup-node, not an invented patch version.
+The fixed workflow runs ubuntu-24.04, macos-15 and windows-2022 × Node 22.19.0 / 24 × Host 0.2.1-rc.2 / 0.2.1-rc.4. The receipt records actual OS release, architecture, Node and loaded package versions. Node 24 means the actual 24.x selected by setup-node, not an invented patch version. GitHub cancelled the preceding macos-14 jobs before execution because that runner configuration was unsupported; macos-15 is the documented standard arm64 label. This changes the current native runner target, not historical macos-14 evidence or product support claims. See [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 
 ```sh
 node ci/compatibility.mjs --host 0.2.1-rc.2 --output "$RUNNER_TEMP/doctor-summary"
@@ -31,6 +31,8 @@ The checkout disables Git autocrlf conversion for that action only. Before Node 
 ## Receipt and cleanup
 
 The npm-install path records the actual setup-node npm version. Failed children additionally expose elapsed milliseconds, enumerated process error/signal, fixed npm error codes, registry HTTP status counts and output byte counts. npm HTTP output is parsed in memory, never uploaded or persisted by this driver. No timing log is enabled, installation deadlines remain unchanged, and missing diagnostic matches do not prove a phase was never reached.
+
+Only the npm-install child preloads this same CI driver, gated by a dedicated marker, exact npm CLI identity and isolated Home agreement; pack, Host and real profiles do not receive the marker or global NODE_OPTIONS. The observer records fixed timer phases and normalized package counters, never raw timer names, package locations or URLs. Fixed phase transitions persist immediately; package counters aggregate in memory and flush at most every five seconds. An atomic journal stays inside the temporary Home. The parent accepts at most 4KiB of regular, non-symlink, strictly validated fixed-key data; missing or invalid data remains unknown and does not alter npm's exit or the 480-second deadline. Timer ended means timing ended, not operation succeeded; only the original installation and receipt gates establish success.
 
 Only `summary.json` is uploaded. Its allowlisted fields bind revision (when available), canonical source file hashes, package version/tarball hash, actual runtime versions, step status/exit code, timestamps, counts and listener/Home cleanup. No raw stdout/stderr, environment dump, cookies/tokens, temporary absolute path, profile, SDK directory or log is uploaded. Failed children expose fixed codes only. Captured output remains inside the temporary domain and is discarded. Cleanup failure, missing versions, failed checks or bad receipts fail the run.
 

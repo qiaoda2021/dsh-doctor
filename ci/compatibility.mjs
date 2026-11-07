@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from 'node:fs'
+import { dirname, join, resolve, isAbsolute } from 'node:path'
 import { tmpdir, platform, arch, release } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { inspectPublicRelease, stagePublicRelease } from '../lib/distribution.js'
@@ -18,6 +18,58 @@ export const SDK_PACKAGES = ['@deepseek-ai/dsh', '@deepseek-ai/cordis', '@deepse
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'))
 const fixedCode = (error) => /^[A-Z_0-9]{1,80}$/.test(error?.code ?? '') ? error.code : 'CHECK_FAILED'
+
+export const NPM_PHASE_IDS = ['idealTree', 'idealTree:buildDeps', 'reify:loadTrees', 'reify:createSparse', 'reify:unpack', 'reify:build', 'build:link', 'reify:save', 'reify', 'packageReify']
+const PHASE_FILE = '.doctor-ci-npm-phases.json'
+export function recordNpmPhases(publish) {
+  const start = performance.now(), phases = Object.fromEntries(NPM_PHASE_IDS.map((id) => [id, { started: 0, ended: 0, startMs: null, endMs: null }]))
+  let dirty = true, lastPhase = null, lastEvent = null
+  const elapsed = () => Math.floor(performance.now() - start)
+  const flush = () => {
+    if (!dirty) return
+    // Observation failures must not change npm's exit status or discard the pending snapshot.
+    try {
+      publish({ schemaVersion: 1, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])) })
+      dirty = false
+    } catch {}
+  }
+  const onTime = (event, name) => {
+    const id = NPM_PHASE_IDS.includes(name) ? name : typeof name === 'string' && name.startsWith('reifyNode:') ? 'packageReify' : null
+    if (!id || !['start', 'end'].includes(event)) return
+    const row = phases[id], key = event === 'start' ? 'started' : 'ended'
+    if (row[key] >= 1000000) return
+    row[key]++; row[event === 'start' ? 'startMs' : 'endMs'] = elapsed()
+    lastPhase = id; lastEvent = event; dirty = true
+    if (id !== 'packageReify') flush()
+  }
+  const timer = setInterval(flush, 5000); timer.unref()
+  const stop = () => { clearInterval(timer); process.off('time', onTime); process.off('exit', stop); flush() }
+  process.on('time', onTime); process.once('exit', stop); flush()
+  return stop
+}
+export function readNpmPhases(file) {
+  try {
+    const info = lstatSync(file)
+    assert(info.isFile() && !info.isSymbolicLink() && info.size <= 4096)
+    const value = json(file), integer = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max
+    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases'].sort())
+    assert(value.schemaVersion === 1 && value.observerReady === true && integer(value.elapsedMs, 1800000))
+    assert(value.lastPhase === null ? value.lastEvent === null : NPM_PHASE_IDS.includes(value.lastPhase) && ['start', 'end'].includes(value.lastEvent))
+    assert.deepEqual(Object.keys(value.phases).sort(), NPM_PHASE_IDS.slice().sort())
+    for (const row of Object.values(value.phases)) {
+      assert.deepEqual(Object.keys(row).sort(), ['started', 'ended', 'startMs', 'endMs'].sort())
+      assert(integer(row.started, 1000000) && integer(row.ended, 1000000))
+      for (const [count, time] of [['started', 'startMs'], ['ended', 'endMs']]) assert(row[count] === 0 ? row[time] === null : integer(row[time], value.elapsedMs))
+    }
+    return { status: 'available', ...value }
+  } catch { return { status: 'unknown' } }
+}
+const expectedNpmCli = process.env.DOCTOR_CI_NPM_CLI, isolatedHome = process.env.HOME
+if (process.env.DOCTOR_CI_NPM_PHASES === '1' && expectedNpmCli && /(?:^|[\\/])npm-cli\.js$/.test(expectedNpmCli) && process.argv[1] && resolve(process.argv[1]) === resolve(expectedNpmCli)
+  && isolatedHome && isAbsolute(isolatedHome) && process.env.USERPROFILE === isolatedHome && process.env.DSH_HOME === join(isolatedHome, '.dsh')) {
+  const target = join(isolatedHome, PHASE_FILE)
+  recordNpmPhases((value) => { writeFileSync(target + '.tmp', JSON.stringify(value), { mode: 0o600 }); renameSync(target + '.tmp', target) })
+}
 
 export function samePublishedBytes(path, actual, expected) {
   if (path !== 'package.json') return hash(actual) === hash(expected)
@@ -83,10 +135,13 @@ async function main() {
     evidenceLimits: ['graph rows are fixtures, not desktop or browser visual proof', 'no model request, real profile, or live repair', 'platform overrides are branch tests; runtime fields identify native OS'] }
   const step = (id, status, exitCode, extra = {}) => report.steps.push({ id, status, exitCode, ...extra })
   const run = (id, args, cwd, timeout = 180000) => {
-    const started = Date.now()
-    const result = spawnSync(process.execPath, args, { cwd, env, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
+    const started = Date.now(), npmInstall = id === 'exact-sdk-and-candidate-fixture-install'
+    const childEnv = npmInstall ? { ...env, DOCTOR_CI_NPM_PHASES: '1', DOCTOR_CI_NPM_CLI: args[0] } : env
+    const childArgs = npmInstall ? ['--import', import.meta.url, ...args] : args
+    const result = spawnSync(process.execPath, childArgs, { cwd, env: childEnv, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
     const exitCode = typeof result.status === 'number' ? result.status : -1
-    step(id, exitCode === 0 ? 'passed' : 'failed', exitCode, { timedOut: result.error?.code === 'ETIMEDOUT', ...(exitCode === 0 ? {} : { diagnostic: childFailure(result, Date.now() - started) }) })
+    step(id, exitCode === 0 ? 'passed' : 'failed', exitCode, { timedOut: result.error?.code === 'ETIMEDOUT',
+      ...(npmInstall ? { npmPhaseEvidence: readNpmPhases(join(home, PHASE_FILE)) } : {}), ...(exitCode === 0 ? {} : { diagnostic: childFailure(result, Date.now() - started) }) })
     assert.equal(exitCode, 0, id)
     return result.stdout
   }
