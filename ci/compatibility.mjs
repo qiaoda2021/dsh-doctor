@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { createHook } from 'node:async_hooks'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from 'node:fs'
 import { dirname, join, resolve, isAbsolute } from 'node:path'
 import { tmpdir, platform, arch, release } from 'node:os'
@@ -21,15 +22,55 @@ const fixedCode = (error) => /^[A-Z_0-9]{1,80}$/.test(error?.code ?? '') ? error
 
 export const NPM_PHASE_IDS = ['idealTree', 'idealTree:buildDeps', 'reify:loadTrees', 'reify:createSparse', 'reify:unpack', 'reify:build', 'build:link', 'reify:save', 'reify', 'packageReify']
 const PHASE_FILE = '.doctor-ci-npm-phases.json'
+export function observeInstallActivity() {
+  const active = new Map()
+  let activatedMs, previousMs, previousCpu, previousLoop
+  try {
+    activatedMs = performance.now(); previousMs = activatedMs
+    previousCpu = process.cpuUsage(); previousLoop = performance.eventLoopUtilization()
+  } catch { return { snapshot: () => ({ status: 'unknown' }), stop() {} } }
+  let fsStarts = 0, fsFinishedTracked = 0, fsPeakTracked = 0, fsDropped = 0, failed = false, hook
+  try {
+    hook = createHook({
+      init(id, type) {
+        if (failed || type !== 'FSREQCALLBACK' && type !== 'FSREQPROMISE') return
+        try {
+          if (++fsStarts > 1000000000) { failed = true; return }
+          if (active.size >= 4096) { fsDropped++; return }
+          active.set(id, performance.now()); fsPeakTracked = Math.max(fsPeakTracked, active.size)
+        } catch { failed = true }
+      },
+      destroy(id) { try { if (active.delete(id)) fsFinishedTracked++ } catch { failed = true } },
+    }).enable()
+  } catch { failed = true }
+  return {
+    snapshot() {
+      if (failed) return { status: 'unknown' }
+      try {
+        const now = performance.now(), cpu = process.cpuUsage(), loop = performance.eventLoopUtilization()
+        const value = { status: 'available', sampleElapsedMs: Math.floor(now - activatedMs), sampleWindowMs: Math.floor(now - previousMs),
+          cpuUserUs: cpu.user - previousCpu.user, cpuSystemUs: cpu.system - previousCpu.system,
+          loopActiveMs: loop.active - previousLoop.active, loopIdleMs: loop.idle - previousLoop.idle, fsStarts, fsFinishedTracked, fsTrackedAlive: active.size,
+          fsOldestTrackedAgeMs: active.size ? Math.floor(now - Math.min(...active.values())) : 0, fsPeakTracked, fsDropped }
+        assert(Object.entries(value).every(([key, n]) => key === 'status' || Number.isFinite(n) && n >= 0 && n <= 1000000000000))
+        previousMs = now; previousCpu = cpu; previousLoop = loop
+        return value
+      } catch { return { status: 'unknown' } }
+    },
+    stop() { failed = true; try { hook?.disable() } catch {} active.clear() },
+  }
+}
+
 export function recordNpmPhases(publish) {
   const start = performance.now(), phases = Object.fromEntries(NPM_PHASE_IDS.map((id) => [id, { started: 0, ended: 0, startMs: null, endMs: null }]))
+  const activity = observeInstallActivity()
   let dirty = true, lastPhase = null, lastEvent = null
   const elapsed = () => Math.floor(performance.now() - start)
-  const flush = () => {
-    if (!dirty) return
+  const flush = (heartbeat = false) => {
+    if (!dirty && !heartbeat) return
     // Observation failures must not change npm's exit status or discard the pending snapshot.
     try {
-      publish({ schemaVersion: 1, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])) })
+      publish({ schemaVersion: 2, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])), activity: activity.snapshot() })
       dirty = false
     } catch {}
   }
@@ -42,8 +83,8 @@ export function recordNpmPhases(publish) {
     lastPhase = id; lastEvent = event; dirty = true
     if (id !== 'packageReify') flush()
   }
-  const timer = setInterval(flush, 5000); timer.unref()
-  const stop = () => { clearInterval(timer); process.off('time', onTime); process.off('exit', stop); flush() }
+  const timer = setInterval(() => flush(true), 5000); timer.unref()
+  const stop = () => { clearInterval(timer); process.off('time', onTime); process.off('exit', stop); flush(true); activity.stop() }
   process.on('time', onTime); process.once('exit', stop); flush()
   return stop
 }
@@ -52,14 +93,28 @@ export function readNpmPhases(file) {
     const info = lstatSync(file)
     assert(info.isFile() && !info.isSymbolicLink() && info.size <= 4096)
     const value = json(file), integer = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max
-    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases'].sort())
-    assert(value.schemaVersion === 1 && value.observerReady === true && integer(value.elapsedMs, 1800000))
+    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases', 'activity'].sort())
+    assert(value.schemaVersion === 2 && value.observerReady === true && integer(value.elapsedMs, 1800000))
     assert(value.lastPhase === null ? value.lastEvent === null : NPM_PHASE_IDS.includes(value.lastPhase) && ['start', 'end'].includes(value.lastEvent))
     assert.deepEqual(Object.keys(value.phases).sort(), NPM_PHASE_IDS.slice().sort())
     for (const row of Object.values(value.phases)) {
       assert.deepEqual(Object.keys(row).sort(), ['started', 'ended', 'startMs', 'endMs'].sort())
       assert(integer(row.started, 1000000) && integer(row.ended, 1000000))
       for (const [count, time] of [['started', 'startMs'], ['ended', 'endMs']]) assert(row[count] === 0 ? row[time] === null : integer(row[time], value.elapsedMs))
+    }
+    const data = value.activity
+    assert(data && ['available', 'unknown'].includes(data.status))
+    if (data.status === 'unknown') assert.deepEqual(Object.keys(data), ['status'])
+    else {
+      assert.deepEqual(Object.keys(data).sort(), ['status', 'sampleElapsedMs', 'sampleWindowMs', 'cpuUserUs', 'cpuSystemUs', 'loopActiveMs', 'loopIdleMs', 'fsStarts', 'fsFinishedTracked', 'fsTrackedAlive', 'fsOldestTrackedAgeMs', 'fsPeakTracked', 'fsDropped'].sort())
+      for (const key of ['loopActiveMs', 'loopIdleMs']) assert(Number.isFinite(data[key]) && data[key] >= 0 && data[key] <= 1800000)
+      for (const key of ['cpuUserUs', 'cpuSystemUs']) assert(integer(data[key], 1000000000000))
+      for (const key of ['sampleElapsedMs', 'sampleWindowMs', 'fsOldestTrackedAgeMs']) assert(integer(data[key], 1800000))
+      for (const key of ['fsStarts', 'fsFinishedTracked', 'fsTrackedAlive', 'fsPeakTracked', 'fsDropped']) assert(integer(data[key], 1000000000))
+      assert(data.sampleWindowMs <= data.sampleElapsedMs)
+      assert(data.fsTrackedAlive <= 4096 && data.fsPeakTracked <= 4096 && data.fsPeakTracked >= data.fsTrackedAlive)
+      assert(data.fsStarts - data.fsFinishedTracked - data.fsDropped === data.fsTrackedAlive)
+      assert(data.fsTrackedAlive !== 0 || data.fsOldestTrackedAgeMs === 0)
     }
     return { status: 'available', ...value }
   } catch { return { status: 'unknown' } }
