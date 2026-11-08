@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createHook } from 'node:async_hooks'
+import { subscribe, unsubscribe } from 'node:diagnostics_channel'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from 'node:fs'
 import { dirname, join, resolve, isAbsolute } from 'node:path'
 import { tmpdir, platform, arch, release } from 'node:os'
@@ -78,16 +79,85 @@ export function observeInstallActivity() {
   }
 }
 
+export function observeInstallHttp() {
+  const active = new Map(), seen = new WeakSet()
+  const counts = { createdCount: 0, headersCount: 0, bodyEndCount: 0, closedBeforeEndCount: 0 }
+  let failed = false, stopped = false
+  const clock = () => { const n = performance.now(); assert(Number.isFinite(n) && n >= 0); return n }
+  const increment = (key) => { assert(++counts[key] <= 1000000) }
+  const cleanup = (request, row) => {
+    for (const [target, event, listener] of [[request, 'close', row.onClose], [row.response, 'end', row.onEnd], [row.response, 'close', row.onClose]]) {
+      try { target?.removeListener(event, listener) } catch { failed = true }
+    }
+  }
+  const finish = (request, ended) => {
+    if (stopped) return
+    const row = active.get(request)
+    if (!row) return
+    try { if (!failed) increment(ended ? 'bodyEndCount' : 'closedBeforeEndCount') }
+    catch { failed = true }
+    finally { cleanup(request, row); active.delete(request) }
+  }
+  const created = (message) => {
+    if (failed || stopped) return
+    try {
+      const request = message.request
+      assert(request && typeof request === 'object' && typeof request.once === 'function' && typeof request.removeListener === 'function')
+      assert(!seen.has(request) && active.size < 1024)
+      const row = { startedAt: clock(), response: null, onEnd: () => finish(request, true), onClose: () => finish(request, false) }
+      seen.add(request); active.set(request, row); increment('createdCount')
+      request.once('close', row.onClose)
+    } catch { failed = true }
+  }
+  const headers = (message) => {
+    if (failed || stopped) return
+    try {
+      const request = message.request, response = message.response, row = active.get(request)
+      assert(row && !row.response && response && typeof response.once === 'function' && typeof response.removeListener === 'function' && typeof response.complete === 'boolean')
+      row.response = response; increment('headersCount')
+      response.once('end', row.onEnd); response.once('close', row.onClose)
+    } catch { failed = true }
+  }
+  const channels = [['http.client.request.created', created], ['http.client.response.finish', headers]]
+  const stop = () => {
+    stopped = true
+    for (const [name, listener] of channels) { try { unsubscribe(name, listener) } catch { failed = true } }
+    for (const [request, row] of active) cleanup(request, row)
+    active.clear()
+  }
+  try { for (const [name, listener] of channels) subscribe(name, listener) } catch { failed = true; stop() }
+  return {
+    snapshot() {
+      if (failed || stopped || !counts.createdCount || !counts.headersCount) return { status: 'unknown' }
+      try {
+        const now = clock()
+        let liveNoHeaders = 0, liveBodyIncomplete = 0, liveBodyCompleteNotEnded = 0, oldestLiveAgeMs = 0
+        for (const row of active.values()) {
+          assert(now >= row.startedAt)
+          oldestLiveAgeMs = Math.max(oldestLiveAgeMs, Math.floor(now - row.startedAt))
+          if (!row.response) liveNoHeaders++
+          else { const complete = row.response.complete; assert(typeof complete === 'boolean'); if (complete) liveBodyCompleteNotEnded++; else liveBodyIncomplete++ }
+        }
+        assert(oldestLiveAgeMs <= 1800000)
+        assert(liveNoHeaders + liveBodyIncomplete + liveBodyCompleteNotEnded === counts.createdCount - counts.bodyEndCount - counts.closedBeforeEndCount)
+        return { status: 'available', ...counts, liveNoHeaders, liveBodyIncomplete, liveBodyCompleteNotEnded, oldestLiveAgeMs }
+      } catch { failed = true; return { status: 'unknown' } }
+    },
+    stop,
+  }
+}
+
 export function recordNpmPhases(publish) {
   const start = performance.now(), phases = Object.fromEntries(NPM_PHASE_IDS.map((id) => [id, { started: 0, ended: 0, startMs: null, endMs: null }]))
-  const activity = observeInstallActivity()
+  const activity = observeInstallActivity(), http = observeInstallHttp()
   let dirty = true, lastPhase = null, lastEvent = null
   const elapsed = () => Math.floor(performance.now() - start)
   const flush = (heartbeat = false) => {
     if (!dirty && !heartbeat) return
     // Observation failures must not change npm's exit status or discard the pending snapshot.
     try {
-      publish({ schemaVersion: 3, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])), activity: activity.snapshot(), gracefulFs: readGracefulQueue() })
+      const activityValue = activity.snapshot(), httpValue = http.snapshot()
+      publish({ schemaVersion: 4, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])), activity: activityValue, gracefulFs: readGracefulQueue(), http: httpValue })
       dirty = false
     } catch {}
   }
@@ -101,7 +171,7 @@ export function recordNpmPhases(publish) {
     if (id !== 'packageReify') flush()
   }
   const timer = setInterval(() => flush(true), 5000); timer.unref()
-  const stop = () => { clearInterval(timer); process.off('time', onTime); process.off('exit', stop); flush(true); activity.stop() }
+  const stop = () => { clearInterval(timer); process.off('time', onTime); process.off('exit', stop); flush(true); activity.stop(); http.stop() }
   process.on('time', onTime); process.once('exit', stop); flush()
   return stop
 }
@@ -110,8 +180,8 @@ export function readNpmPhases(file) {
     const info = lstatSync(file)
     assert(info.isFile() && !info.isSymbolicLink() && info.size <= 4096)
     const value = json(file), integer = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max
-    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases', 'activity', 'gracefulFs'].sort())
-    assert(value.schemaVersion === 3 && value.observerReady === true && integer(value.elapsedMs, 1800000))
+    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases', 'activity', 'gracefulFs', 'http'].sort())
+    assert(value.schemaVersion === 4 && value.observerReady === true && integer(value.elapsedMs, 1800000))
     assert(value.lastPhase === null ? value.lastEvent === null : NPM_PHASE_IDS.includes(value.lastPhase) && ['start', 'end'].includes(value.lastEvent))
     assert.deepEqual(Object.keys(value.phases).sort(), NPM_PHASE_IDS.slice().sort())
     for (const row of Object.values(value.phases)) {
@@ -141,6 +211,20 @@ export function readNpmPhases(file) {
       assert(Object.entries(queued).every(([key, n]) => key === 'status' || integer(n, 1000000)))
       assert(queued.sampledCount === Math.min(queued.queuedCount, 128) && queued.omittedCount === queued.queuedCount - queued.sampledCount)
       assert(queued.emfileCount + queued.enfileCount + queued.unclassifiedCount === queued.sampledCount)
+    }
+    const http = value.http
+    assert(http && ['available', 'unknown'].includes(http.status))
+    if (http.status === 'unknown') assert.deepEqual(Object.keys(http), ['status'])
+    else {
+      assert.deepEqual(Object.keys(http).sort(), ['status', 'createdCount', 'headersCount', 'bodyEndCount', 'closedBeforeEndCount', 'liveNoHeaders', 'liveBodyIncomplete', 'liveBodyCompleteNotEnded', 'oldestLiveAgeMs'].sort())
+      assert(Object.entries(http).every(([key, n]) => key === 'status' || integer(n, key === 'oldestLiveAgeMs' ? value.elapsedMs : 1000000)))
+      const live = http.liveNoHeaders + http.liveBodyIncomplete + http.liveBodyCompleteNotEnded
+      assert(http.headersCount >= 1 && http.headersCount <= http.createdCount && http.bodyEndCount <= http.headersCount)
+      assert(http.bodyEndCount + http.closedBeforeEndCount <= http.createdCount)
+      assert(live <= 1024 && live === http.createdCount - http.bodyEndCount - http.closedBeforeEndCount)
+      assert(http.liveNoHeaders <= http.createdCount - http.headersCount)
+      assert(http.liveBodyIncomplete + http.liveBodyCompleteNotEnded <= http.headersCount - http.bodyEndCount)
+      assert(live !== 0 || http.oldestLiveAgeMs === 0)
     }
     return { status: 'available', ...value }
   } catch { return { status: 'unknown' } }
