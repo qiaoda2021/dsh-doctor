@@ -22,6 +22,23 @@ const fixedCode = (error) => /^[A-Z_0-9]{1,80}$/.test(error?.code ?? '') ? error
 
 export const NPM_PHASE_IDS = ['idealTree', 'idealTree:buildDeps', 'reify:loadTrees', 'reify:createSparse', 'reify:unpack', 'reify:build', 'build:link', 'reify:save', 'reify', 'packageReify']
 const PHASE_FILE = '.doctor-ci-npm-phases.json'
+export function readGracefulQueue(readQueue, version) {
+  try {
+    if ((version ?? process.env.DOCTOR_CI_GRACEFUL_FS_VERSION) !== '4.2.11') return { status: 'unknown' }
+    const queue = readQueue ? readQueue() : globalThis[Symbol.for('graceful-fs.queue')]
+    if (!Array.isArray(queue) || queue.length > 1000000) return { status: 'unknown' }
+    const queuedCount = queue.length, sampledCount = Math.min(queuedCount, 128)
+    let emfileCount = 0, enfileCount = 0, unclassifiedCount = 0
+    for (let index = 0; index < sampledCount; index++) {
+      const entry = queue[index], code = Array.isArray(entry) ? entry[2]?.code : undefined
+      if (code === 'EMFILE') emfileCount++
+      else if (code === 'ENFILE') enfileCount++
+      else unclassifiedCount++
+    }
+    return { status: 'available', queuedCount, sampledCount, omittedCount: queuedCount - sampledCount, emfileCount, enfileCount, unclassifiedCount }
+  } catch { return { status: 'unknown' } }
+}
+
 export function observeInstallActivity() {
   const active = new Map()
   let activatedMs, previousMs, previousCpu, previousLoop
@@ -70,7 +87,7 @@ export function recordNpmPhases(publish) {
     if (!dirty && !heartbeat) return
     // Observation failures must not change npm's exit status or discard the pending snapshot.
     try {
-      publish({ schemaVersion: 2, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])), activity: activity.snapshot() })
+      publish({ schemaVersion: 3, observerReady: true, elapsedMs: elapsed(), lastPhase, lastEvent, phases: Object.fromEntries(Object.entries(phases).map(([id, row]) => [id, { ...row }])), activity: activity.snapshot(), gracefulFs: readGracefulQueue() })
       dirty = false
     } catch {}
   }
@@ -93,8 +110,8 @@ export function readNpmPhases(file) {
     const info = lstatSync(file)
     assert(info.isFile() && !info.isSymbolicLink() && info.size <= 4096)
     const value = json(file), integer = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max
-    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases', 'activity'].sort())
-    assert(value.schemaVersion === 2 && value.observerReady === true && integer(value.elapsedMs, 1800000))
+    assert.deepEqual(Object.keys(value).sort(), ['schemaVersion', 'observerReady', 'elapsedMs', 'lastPhase', 'lastEvent', 'phases', 'activity', 'gracefulFs'].sort())
+    assert(value.schemaVersion === 3 && value.observerReady === true && integer(value.elapsedMs, 1800000))
     assert(value.lastPhase === null ? value.lastEvent === null : NPM_PHASE_IDS.includes(value.lastPhase) && ['start', 'end'].includes(value.lastEvent))
     assert.deepEqual(Object.keys(value.phases).sort(), NPM_PHASE_IDS.slice().sort())
     for (const row of Object.values(value.phases)) {
@@ -115,6 +132,15 @@ export function readNpmPhases(file) {
       assert(data.fsTrackedAlive <= 4096 && data.fsPeakTracked <= 4096 && data.fsPeakTracked >= data.fsTrackedAlive)
       assert(data.fsStarts - data.fsFinishedTracked - data.fsDropped === data.fsTrackedAlive)
       assert(data.fsTrackedAlive !== 0 || data.fsOldestTrackedAgeMs === 0)
+    }
+    const queued = value.gracefulFs
+    assert(queued && ['available', 'unknown'].includes(queued.status))
+    if (queued.status === 'unknown') assert.deepEqual(Object.keys(queued), ['status'])
+    else {
+      assert.deepEqual(Object.keys(queued).sort(), ['status', 'queuedCount', 'sampledCount', 'omittedCount', 'emfileCount', 'enfileCount', 'unclassifiedCount'].sort())
+      assert(Object.entries(queued).every(([key, n]) => key === 'status' || integer(n, 1000000)))
+      assert(queued.sampledCount === Math.min(queued.queuedCount, 128) && queued.omittedCount === queued.queuedCount - queued.sampledCount)
+      assert(queued.emfileCount + queued.enfileCount + queued.unclassifiedCount === queued.sampledCount)
     }
     return { status: 'available', ...value }
   } catch { return { status: 'unknown' } }
@@ -191,7 +217,7 @@ async function main() {
   const step = (id, status, exitCode, extra = {}) => report.steps.push({ id, status, exitCode, ...extra })
   const run = (id, args, cwd, timeout = 180000) => {
     const started = Date.now(), npmInstall = id === 'exact-sdk-and-candidate-fixture-install'
-    const childEnv = npmInstall ? { ...env, DOCTOR_CI_NPM_PHASES: '1', DOCTOR_CI_NPM_CLI: args[0] } : env
+    const childEnv = npmInstall ? { ...env, DOCTOR_CI_NPM_PHASES: '1', DOCTOR_CI_NPM_CLI: args[0], DOCTOR_CI_GRACEFUL_FS_VERSION: report.runtime.gracefulFsVersion ?? '' } : env
     const childArgs = npmInstall ? ['--import', import.meta.url, ...args] : args
     const result = spawnSync(process.execPath, childArgs, { cwd, env: childEnv, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
     const exitCode = typeof result.status === 'number' ? result.status : -1
@@ -220,6 +246,10 @@ async function main() {
       const npm = npmCli()
       assert(npm, 'setup-node npm CLI required')
       report.runtime.npm = json(join(dirname(npm), '../package.json')).version
+      try {
+        const graceful = json(join(dirname(npm), '../node_modules/graceful-fs/package.json'))
+        report.runtime.gracefulFsVersion = graceful.name === 'graceful-fs' && graceful.version === '4.2.11' ? graceful.version : null
+      } catch { report.runtime.gracefulFsVersion = null }
       const packed = JSON.parse(run('candidate-pack', [npm, 'pack', '--json', '--ignore-scripts', '--pack-destination', sandbox], stage))
       assert.equal(packed.length, 1)
       const packedFiles = packed[0].files.map((row) => row.path).sort()
