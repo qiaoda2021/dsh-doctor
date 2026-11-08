@@ -187,8 +187,16 @@ export function childFailure(result, elapsedMs) {
     .filter((code) => observedCodes.includes(code))
   const registryHttpStatuses = {}
   for (const match of stderr.matchAll(/^npm http fetch (?:GET|POST|PUT|DELETE|HEAD) ([1-5]\d\d) https:\/\/registry\.npmjs\.org\//gm)) registryHttpStatuses[match[1]] = (registryHttpStatuses[match[1]] ?? 0) + 1
+  const tarEntryWarningEvidence = typeof result.stderr === 'string' || Buffer.isBuffer(result.stderr) ? result.error?.code === 'ENOBUFS' ? 'partial' : 'available' : 'unknown'
+  let tarEntryWarningCount = tarEntryWarningEvidence === 'unknown' ? null : 0
+  const tarEntryErrnoCounts = tarEntryWarningEvidence === 'unknown' ? null : {}
+  if (tarEntryErrnoCounts) for (const match of stderr.matchAll(/^npm (?:warn|WARN) tar TAR_ENTRY_ERROR(?= |\r?$)(?: (EACCES|EPERM|ENOENT|EBUSY|ENOSPC|ENOTEMPTY|EEXIST|EISDIR|ENOTDIR|EINVAL|EIO|EROFS|EMFILE|ENFILE|ENAMETOOLONG|EBADF|ENOMEM|ETXTBSY|UNKNOWN):)?/gm)) {
+    const code = match[1] ?? 'OTHER'
+    tarEntryWarningCount++; tarEntryErrnoCounts[code] = (tarEntryErrnoCounts[code] ?? 0) + 1
+  }
   return { elapsedMs, processErrorCode: result.error ? (['ETIMEDOUT', 'ENOBUFS', 'ENOENT', 'EACCES', 'EPERM'].includes(result.error.code) ? result.error.code : 'UNKNOWN') : null,
     signal: ['SIGTERM', 'SIGKILL', 'SIGABRT'].includes(result.signal) ? result.signal : null, npmErrorCodes, registryHttpStatuses,
+    tarEntryWarningEvidence, tarEntryWarningCount, tarEntryErrnoCounts,
     stdoutBytes: Buffer.byteLength(String(result.stdout ?? '')), stderrBytes: Buffer.byteLength(stderr) }
 }
 
