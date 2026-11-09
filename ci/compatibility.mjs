@@ -284,6 +284,13 @@ export function childFailure(result, elapsedMs) {
     stdoutBytes: Buffer.byteLength(String(result.stdout ?? '')), stderrBytes: Buffer.byteLength(stderr) }
 }
 
+const WINDOWS_INSTALL_POOL_ENV = '32'
+export function ciChildEnvironment(env, id, npm, gracefulVersion, nodePlatform = platform()) {
+  if (id !== 'exact-sdk-and-candidate-fixture-install') return env
+  return { ...env, DOCTOR_CI_NPM_PHASES: '1', DOCTOR_CI_NPM_CLI: npm, DOCTOR_CI_GRACEFUL_FS_VERSION: gracefulVersion ?? '',
+    ...(nodePlatform === 'win32' ? { UV_THREADPOOL_SIZE: WINDOWS_INSTALL_POOL_ENV } : {}) }
+}
+
 function npmCli() {
   const bin = dirname(process.execPath)
   return [join(bin, 'node_modules/npm/bin/npm-cli.js'), join(bin, '../lib/node_modules/npm/bin/npm-cli.js')].find(existsSync)
@@ -309,7 +316,7 @@ async function main() {
   const step = (id, status, exitCode, extra = {}) => report.steps.push({ id, status, exitCode, ...extra })
   const run = (id, args, cwd, timeout = 180000) => {
     const started = Date.now(), npmInstall = id === 'exact-sdk-and-candidate-fixture-install'
-    const childEnv = npmInstall ? { ...env, DOCTOR_CI_NPM_PHASES: '1', DOCTOR_CI_NPM_CLI: args[0], DOCTOR_CI_GRACEFUL_FS_VERSION: report.runtime.gracefulFsVersion ?? '' } : env
+    const childEnv = ciChildEnvironment(env, id, args[0], report.runtime.gracefulFsVersion)
     const childArgs = npmInstall ? ['--import', import.meta.url, ...args] : args
     const result = spawnSync(process.execPath, childArgs, { cwd, env: childEnv, encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
     const exitCode = typeof result.status === 'number' ? result.status : -1
@@ -338,6 +345,9 @@ async function main() {
       const npm = npmCli()
       assert(npm, 'setup-node npm CLI required')
       report.runtime.npm = json(join(dirname(npm), '../package.json')).version
+      report.runtime.installExperiment = { name: platform() === 'win32' ? 'windows-install-pool32' : 'non-windows-default',
+        requestedUvThreadpoolSizeEnv: platform() === 'win32' ? WINDOWS_INSTALL_POOL_ENV : null,
+        baselineRunId: 42464092595, baselineSourceSha256: '1ac0856db923c611bbf129e586dc9986f9549a389fb5e66408e730d7ba37db37' }
       try {
         const graceful = json(join(dirname(npm), '../node_modules/graceful-fs/package.json'))
         report.runtime.gracefulFsVersion = graceful.name === 'graceful-fs' && graceful.version === '4.2.11' ? graceful.version : null

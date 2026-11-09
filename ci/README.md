@@ -28,6 +28,14 @@ A local cached-SDK reproduction may add `--runtime-root SDK_ROOT --prepared-pack
 
 The checkout disables Git autocrlf conversion for that action only. Before Node setup, every tracked working-tree file must match its raw Git blob hash; CRLF-transformed content is not accepted as frozen source. This gate does not diagnose npm installation failures.
 
+## Scoped Windows install-pool diagnostic
+
+After r12 observed all ordinary native HTTP requests ended while Windows unpack remained unfinished, this revision runs one pool-sensitive diagnostic: only the exact SDK npm-install child on native Windows receives `UV_THREADPOOL_SIZE=32` in its fresh environment before Node starts. Pack, Host/worker and non-Windows children keep that variable absent. The parent environment is not modified. The full five declared SDK packages, npm arguments, disabled scripts, 480-second deadline, exit/cleanup verdicts, journal v4 and twelve-row matrix stay unchanged; there is no 64-thread trial.
+
+`runtime.installExperiment` has only `name`, `requestedUvThreadpoolSizeEnv`, `baselineRunId` and `baselineSourceSha256`. Windows uses `windows-install-pool32` / `32`; non-Windows uses `non-windows-default` / null. The historical baseline is run 42464092595, source `1ac0856db923c611bbf129e586dc9986f9549a389fb5e66408e730d7ba37db37`, whose thin install environment omitted UV and therefore used the documented default of four. These labels record the requested configuration, not a measured worker count or an environment dump.
+
+The pool also serves DNS, zlib and some crypto. A better result would establish pool sensitivity under this configuration, not a filesystem-specific root cause. Different runners, load/time, actual Node/npm patches and transitive dependency/cache/registry contents may drift; the same declared SDK is not a byte-identical complete dependency graph or a randomized same-runner comparison. An unchanged timeout only shows that 32 was insufficient in that run. New errors remain failures, and no result is converted to success by the diagnostic label.
+
 ## Receipt and cleanup
 
 The npm-install path records the actual setup-node npm version. Failed children additionally expose elapsed milliseconds, enumerated process error/signal, fixed npm error codes, registry HTTP status counts, tar-entry warning counts and output byte counts. Captured npm output is parsed in memory, never uploaded or persisted by this driver. No timing log is enabled, installation deadlines remain unchanged, and missing diagnostic matches do not prove a phase was never reached.
